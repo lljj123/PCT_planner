@@ -1,12 +1,16 @@
-*.stl
-*.obj
-*.ply
-*.pcd
-*.npy
-*.pyc
-*.pickle
+__pycache__/
+*.py[cod]
 *.so
 
-__pycache__/
 build/
-install/
+dist/
+planner/lib/build/
+planner/lib/3rdparty/**/build/
+planner/lib/3rdparty/**/install/
+
+.pytest_cache/
+.mypy_cache/
+.vscode/
+
+rsc/pcd/
+rsc/tomogram/*.pickle

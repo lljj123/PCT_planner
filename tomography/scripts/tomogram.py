@@ -16,10 +16,12 @@ class Tomogram(object):
         self.standable_th = int(cfg.trav.standable_ratio * (2 * self.half_trav_k_size + 1) ** 2) - 1
         self.cost_barrier = float(cfg.trav.cost_barrier)
         self.safe_margin = cfg.trav.safe_margin
+        self.safe_margin_gamma = cfg.trav.safe_margin_gamma
         self.inflation = cfg.trav.inflation
         self.half_inf_k_size = int((self.safe_margin + self.inflation) / self.resolution)
 
     def initKernel(self):
+        # 断层扫描核（生成初始地图层）
         self.tomography_kernel = tomographyKernel(
             self.resolution, 
             self.map_dim_x, 
@@ -28,7 +30,7 @@ class Tomogram(object):
             self.slice_h0,
             self.slice_dh
         )
-
+        # 可通行性计算核
         self.trav_kernel = travKernel(
             self.map_dim_x,
             self.map_dim_y,
@@ -40,23 +42,27 @@ class Tomogram(object):
             self.standable_th, 
             self.cost_barrier
         )
-
+        # 成本膨胀核
         self.inflation_kernel = inflationKernel(
             self.map_dim_x,
             self.map_dim_y,
             self.half_inf_k_size
         )
-
+        
+        # 初始化膨胀表（用于后续成本膨胀计算）
         self.inf_table = cp.zeros(
             (2 * self.half_inf_k_size + 1, 2 * self.half_inf_k_size + 1), 
             dtype=cp.float32
         )
+        # 全GPU版本的指数权重计算
+
         for i in range(self.inf_table.shape[0]):
             for j in range(self.inf_table.shape[1]):
                 dist = np.sqrt(
                     (self.resolution * (i - self.half_inf_k_size)) ** 2 + \
                     (self.resolution * (j - self.half_inf_k_size)) ** 2
                 )
+
                 self.inf_table[i, j] = np.clip(
                     1 - (dist - self.inflation) / (self.safe_margin + self.resolution),
                     a_min=0.0, a_max=1.0

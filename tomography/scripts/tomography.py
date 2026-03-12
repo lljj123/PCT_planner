@@ -24,6 +24,12 @@ class Tomography(object):
     def __init__(self, cfg, scene_cfg):
         self.export_dir = rsg_root + cfg.map.export_dir
         self.pcd_file = scene_cfg.pcd.file_name
+        self.auto_align_ground = getattr(scene_cfg.pcd, 'auto_align_ground', False)
+        self.ground_seed_percentile = float(getattr(scene_cfg.pcd, 'ground_seed_percentile', 35.0))
+        self.ground_ransac_dist = float(getattr(scene_cfg.pcd, 'ground_ransac_dist', 0.08))
+        self.ground_ransac_n = int(getattr(scene_cfg.pcd, 'ground_ransac_n', 3))
+        self.ground_ransac_iters = int(getattr(scene_cfg.pcd, 'ground_ransac_iters', 1000))
+        self.pcd_rot_deg = np.asarray(getattr(scene_cfg.pcd, 'rot_deg', [0.0, 0.0, 0.0]), dtype=np.float32)
         self.resolution = scene_cfg.map.resolution
         self.ground_h = scene_cfg.map.ground_h
         self.slice_dh = scene_cfg.map.slice_dh
@@ -36,6 +42,8 @@ class Tomography(object):
         self.process(points)
 
     def initROS(self):
+        # cfg.ros.map_frame='map'
+        # self.map_frame = cfg.ros.map_frame
         self.map_frame = cfg.ros.map_frame
 
         pointcloud_topic = cfg.ros.pointcloud_topic
@@ -61,6 +69,9 @@ class Tomography(object):
 
         if points.shape[1] > 3:
             points = points[:, :3]
+
+        points = self.alignGroundPlane(points)
+        points = self.correctPointCloudTilt(points)
         self.points_max = np.max(points, axis=0)
         self.points_min = np.min(points, axis=0)           
         self.points_min[-1] = self.ground_h
@@ -80,6 +91,119 @@ class Tomography(object):
             GRID_POINTS_XYZI(self.resolution, self.map_dim_x, self.map_dim_y)
 
         return points
+
+    def alignGroundPlane(self, points):
+        if not self.auto_align_ground:
+            return points
+
+        z_threshold = np.percentile(points[:, 2], self.ground_seed_percentile)
+        seed_points = points[points[:, 2] <= z_threshold]
+        if seed_points.shape[0] < self.ground_ransac_n:
+            rospy.logwarn(
+                "Skip ground auto-alignment: not enough seed points (%d)",
+                seed_points.shape[0]
+            )
+            return points
+
+        seed_pcd = o3d.geometry.PointCloud()
+        seed_pcd.points = o3d.utility.Vector3dVector(seed_points.astype(np.float64))
+        plane_model, inliers = seed_pcd.segment_plane(
+            distance_threshold=self.ground_ransac_dist,
+            ransac_n=self.ground_ransac_n,
+            num_iterations=self.ground_ransac_iters,
+        )
+
+        normal = np.asarray(plane_model[:3], dtype=np.float32)
+        normal_norm = np.linalg.norm(normal)
+        if normal_norm < 1e-6:
+            rospy.logwarn("Skip ground auto-alignment: invalid plane normal")
+            return points
+
+        normal /= normal_norm
+        if normal[2] < 0.0:
+            normal = -normal
+
+        target = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        rot = self.rotationMatrixFromVectors(normal, target)
+        center = points.mean(axis=0, keepdims=True)
+        aligned = (points - center) @ rot.T + center
+
+        tilt_deg = np.rad2deg(np.arccos(np.clip(np.dot(normal, target), -1.0, 1.0)))
+        rospy.loginfo(
+            "Ground auto-alignment: normal=[%.4f, %.4f, %.4f], tilt=%.3f deg, seed_points=%d, inliers=%d",
+            normal[0], normal[1], normal[2], tilt_deg, seed_points.shape[0], len(inliers)
+        )
+        return aligned
+
+    def correctPointCloudTilt(self, points):
+        if np.allclose(self.pcd_rot_deg, 0.0):
+            return points
+
+        roll, pitch, yaw = np.deg2rad(self.pcd_rot_deg)
+        cx, sx = np.cos(roll), np.sin(roll)
+        cy, sy = np.cos(pitch), np.sin(pitch)
+        cz, sz = np.cos(yaw), np.sin(yaw)
+
+        rot_x = np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, cx, -sx],
+            [0.0, sx, cx],
+        ], dtype=np.float32)
+        rot_y = np.array([
+            [cy, 0.0, sy],
+            [0.0, 1.0, 0.0],
+            [-sy, 0.0, cy],
+        ], dtype=np.float32)
+        rot_z = np.array([
+            [cz, -sz, 0.0],
+            [sz, cz, 0.0],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float32)
+
+        rot = rot_z @ rot_y @ rot_x
+        center = points.mean(axis=0, keepdims=True)
+        corrected = (points - center) @ rot.T + center
+
+        rospy.loginfo(
+            "Apply point cloud rotation correction [roll_x, pitch_y, yaw_z] = [%.3f, %.3f, %.3f] deg",
+            self.pcd_rot_deg[0], self.pcd_rot_deg[1], self.pcd_rot_deg[2]
+        )
+        return corrected
+
+    def rotationMatrixFromVectors(self, src, dst):
+        src = src / np.linalg.norm(src)
+        dst = dst / np.linalg.norm(dst)
+        cross = np.cross(src, dst)
+        cross_norm = np.linalg.norm(cross)
+        dot = np.clip(np.dot(src, dst), -1.0, 1.0)
+
+        if cross_norm < 1e-6:
+            if dot > 0.0:
+                return np.eye(3, dtype=np.float32)
+
+            axis = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            if abs(src[0]) > 0.9:
+                axis = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            axis = axis - src * np.dot(axis, src)
+            axis = axis / np.linalg.norm(axis)
+            return self.axisAngleToMatrix(axis, np.pi)
+
+        axis = cross / cross_norm
+        angle = np.arccos(dot)
+        return self.axisAngleToMatrix(axis, angle)
+
+    def axisAngleToMatrix(self, axis, angle):
+        axis = axis / np.linalg.norm(axis)
+        x, y, z = axis
+        c = np.cos(angle)
+        s = np.sin(angle)
+        one_c = 1.0 - c
+
+        return np.array([
+            [c + x * x * one_c, x * y * one_c - z * s, x * z * one_c + y * s],
+            [y * x * one_c + z * s, c + y * y * one_c, y * z * one_c - x * s],
+            [z * x * one_c - y * s, z * y * one_c + x * s, c + z * z * one_c],
+        ], dtype=np.float32)
         
     def process(self, points):        
         t_map = 0.0
@@ -209,6 +333,8 @@ if __name__ == '__main__':
     scene_cfg = getattr(__import__('config'), 'Scene' + args.scene)
 
     rospy.init_node('pointcloud_tomography', anonymous=True)
+
+    print(scene_cfg.pcd.file_name)
 
     mapping = Tomography(cfg, scene_cfg)
 

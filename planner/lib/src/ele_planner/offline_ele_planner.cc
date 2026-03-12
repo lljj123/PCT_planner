@@ -1,4 +1,5 @@
 #include "ele_planner/offline_ele_planner.h"
+#include <iostream>
 
 void OfflineElePlanner::InitMap(
     const double a_start_cost_threshold, const double safe_cost_margin,
@@ -18,6 +19,7 @@ void OfflineElePlanner::InitMap(
 
 bool OfflineElePlanner::Plan(const Eigen::Vector3i& start,
                              const Eigen::Vector3i& goal, const bool optimize) {
+
   if (!path_finder_.Search(start, goal)) {
     printf("A star Failed!\n");
     return false;

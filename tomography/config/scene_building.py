@@ -3,21 +3,46 @@ from .scene import ScenePCD, SceneMap, SceneTrav
 
 class SceneBuilding():
     pcd = ScenePCD()
-    pcd.file_name = 'building2_9.pcd'
+    pcd.file_name = 'test2.pcd'
+    pcd.auto_align_ground = True
+    pcd.ground_seed_percentile = 35.0
+    pcd.ground_ransac_dist = 0.08
+    # Example:
+    # pcd.rot_deg = [2.0, -1.5, 0.0]
+    # If the cloud is leaning and you want z to be vertical again,
+    # usually tune roll/pitch (x/y), not yaw (z).
+    # Keep this for residual manual correction after ground auto-alignment.
+    pcd.rot_deg = [0.0, 0.0, 0.0]
 
+    # 初始化场景地图对象
     map = SceneMap()
-    map.resolution = 0.10
+    # 设置地图分辨率，单位为米
+    map.resolution = 0.05
+    # 设置地面高度，单位为米
     map.ground_h = 0.0
+    # 设置切片高度间隔，单位为米
     map.slice_dh = 0.5
 
+    # 初始化场景可通行性分析对象
     trav = SceneTrav()
+    # 设置内核大小，用于形态学操作
     trav.kernel_size = 7
+    # 设置最小间隔，单位为米
     trav.interval_min = 0.50
-    trav.interval_free = 0.65
-    trav.slope_max = 0.40
-    trav.step_max = 0.17
-    trav.standable_ratio = 0.20
+    # 设置机器人正常工作高度，单位为米
+    trav.interval_free = 0.5
+    # 设置最大坡度(弧度)
+    # trav.slope_max = 0.40
+    trav.slope_max = 0.4
+    # 设置机器狗最大台阶跨越高度，单位为米
+    # trav.step_max = 0.11
+    trav.step_max = 0.3
+    # 设置可站立区域的最小比例
+    trav.standable_ratio = 0.5
+    # 设置障碍物成本值
     trav.cost_barrier = 50.0
-    trav.safe_margin = 0.4
-    trav.inflation = 0.2
-
+    # 设置安全边距，单位为米
+    trav.safe_margin = 0.5
+    # 设置膨胀半径，单位为米
+    trav.inflation = 0.1
+    
